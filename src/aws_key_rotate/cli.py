@@ -290,22 +290,53 @@ def main():
         print_colored("\nStep 6: Handle AWS access key limit (2 keys maximum)", Colors.YELLOW)
         print_colored("Warning: You already have 2 access keys (AWS limit of 2 total keys).", Colors.RED)
         
-        # If current key from profile exists, offer to delete it
-        if current_access_key and any(key['AccessKeyId'] == current_access_key for key in access_keys):
-            delete_choice = input(f"\nDelete the current key from profile '{profile}' ({current_access_key})? (Y/n): ").strip().lower()
+        # Smart key selection: prioritize inactive keys, then oldest
+        def get_recommended_key_to_delete():
+            # First, check for inactive keys
+            inactive_keys = [key for key in access_keys if key['Status'] == 'Inactive']
+            if inactive_keys:
+                # Return the oldest inactive key
+                return min(inactive_keys, key=lambda k: k['CreateDate'])
+            
+            # If no inactive keys, return the oldest active key
+            active_keys_list = [key for key in access_keys if key['Status'] == 'Active']
+            if active_keys_list:
+                return min(active_keys_list, key=lambda k: k['CreateDate'])
+            
+            # Fallback to first key (shouldn't happen)
+            return access_keys[0] if access_keys else None
+        
+        recommended_key = get_recommended_key_to_delete()
+        
+        if recommended_key:
+            create_date = recommended_key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S')
+            reason = "inactive" if recommended_key['Status'] == 'Inactive' else "oldest"
+            
+            print_colored(f"\nRecommended key to delete ({reason}):", Colors.YELLOW)
+            print(f"  {recommended_key['AccessKeyId']} ({recommended_key['Status']}) - Created: {create_date}")
+            
+            # If the recommended key is the current profile key, mention it
+            profile_key_note = ""
+            if recommended_key['AccessKeyId'] == current_access_key:
+                profile_key_note = f" (currently used by profile '{profile}')"
+            
+            delete_choice = input(f"\nDelete recommended key {recommended_key['AccessKeyId']}{profile_key_note}? (Y/n): ").strip().lower()
+            
             if delete_choice in ['', 'y', 'yes']:
-                key_to_delete = current_access_key
+                key_to_delete = recommended_key['AccessKeyId']
             else:
-                # Show other keys for manual selection
-                print_colored("\nYour current access keys:", Colors.YELLOW)
+                # Show all keys for manual selection
+                print_colored("\nAll your access keys:", Colors.YELLOW)
                 for i, key in enumerate(access_keys, 1):
                     create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S')
                     status_indicator = f"({key['Status']})"
-                    print(f"{i}. {key['AccessKeyId']} {status_indicator} (Created: {create_date})")
+                    profile_note = f" <- Profile '{profile}'" if key['AccessKeyId'] == current_access_key else ""
+                    recommended_note = " [RECOMMENDED]" if key['AccessKeyId'] == recommended_key['AccessKeyId'] else ""
+                    print(f"{i}. {key['AccessKeyId']} {status_indicator} (Created: {create_date}){profile_note}{recommended_note}")
                 
                 key_to_delete = input("Enter the Access Key ID to delete: ").strip()
         else:
-            # Show all keys for manual selection
+            # Fallback - shouldn't happen but handle gracefully
             print_colored("\nYour current access keys:", Colors.YELLOW)
             for i, key in enumerate(access_keys, 1):
                 create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S')
@@ -385,6 +416,7 @@ def main():
             marker = f" <- Profile '{profile}'" if key['AccessKeyId'] == new_key['AccessKeyId'] else ""
             print(f"{key['AccessKeyId']:<21} {create_date:<25} ", end="")
             print_colored(f"{key['Status']}{marker}", status_color)
+
 
 if __name__ == "__main__":
     main()

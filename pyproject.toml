@@ -1,6 +1,6 @@
 [project]
 name = "aws_key_rotate"
-version = "0.1.1"
+version = "0.1.2"
 description = "Rotate your AWS access keys and update your credentials file."
 readme = "README.md"
 requires-python = ">=3.11"
