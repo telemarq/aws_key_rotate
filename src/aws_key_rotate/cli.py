@@ -286,32 +286,34 @@ def main():
             print(f"{key['AccessKeyId']:<21} {create_date:<25} ", end="")
             print_colored(f"{key['Status']}{marker}", status_color)
     
-    print(f"\nNumber of active access keys: {len(active_keys)}")
+    print(f"\nTotal access keys: {len(access_keys)} (Active: {len(active_keys)}, Inactive: {len(access_keys) - len(active_keys)})")
     
-    # Check if user already has 2 active keys (AWS limit)
-    if len(active_keys) >= 2:
+    # Check if user already has 2 access keys total (AWS limit)
+    if len(access_keys) >= 2:
         print_colored("\nStep 6: Handle AWS access key limit (2 keys maximum)", Colors.YELLOW)
-        print_colored("Warning: You already have 2 active access keys (AWS limit).", Colors.RED)
+        print_colored("Warning: You already have 2 access keys (AWS limit of 2 total keys).", Colors.RED)
         
         # If current key from profile exists, offer to delete it
-        if current_access_key and any(key['AccessKeyId'] == current_access_key for key in active_keys):
+        if current_access_key and any(key['AccessKeyId'] == current_access_key for key in access_keys):
             delete_choice = input(f"\nDelete the current key from profile '{profile}' ({current_access_key})? (Y/n): ").strip().lower()
             if delete_choice in ['', 'y', 'yes']:
                 key_to_delete = current_access_key
             else:
                 # Show other keys for manual selection
-                print_colored("\nYour current active access keys:", Colors.YELLOW)
-                for i, key in enumerate(active_keys, 1):
+                print_colored("\nYour current access keys:", Colors.YELLOW)
+                for i, key in enumerate(access_keys, 1):
                     create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S')
-                    print(f"{i}. {key['AccessKeyId']} (Created: {create_date})")
+                    status_indicator = f"({key['Status']})"
+                    print(f"{i}. {key['AccessKeyId']} {status_indicator} (Created: {create_date})")
                 
                 key_to_delete = input("Enter the Access Key ID to delete: ").strip()
         else:
             # Show all keys for manual selection
-            print_colored("\nYour current active access keys:", Colors.YELLOW)
-            for i, key in enumerate(active_keys, 1):
+            print_colored("\nYour current access keys:", Colors.YELLOW)
+            for i, key in enumerate(access_keys, 1):
                 create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S')
-                print(f"{i}. {key['AccessKeyId']} (Created: {create_date})")
+                status_indicator = f"({key['Status']})"
+                print(f"{i}. {key['AccessKeyId']} {status_indicator} (Created: {create_date})")
             
             key_to_delete = input("Enter the Access Key ID to delete: ").strip()
         
@@ -352,7 +354,7 @@ def main():
             any(key['AccessKeyId'] == current_access_key for key in list_access_keys(iam_client, username))):
             
             print_colored(f"\nStep 9: Clean up old access key", Colors.YELLOW)
-            delete_old = input(f"Delete the old access key ({current_access_key}) that was replaced? (Y/n): ").strip().lower()
+            delete_old = input(f"Delete the previous current access key ({current_access_key})? (Y/n): ").strip().lower()
             if delete_old in ['', 'y', 'yes']:
                 print(f"Deleting old access key: {current_access_key}")
                 if delete_access_key(iam_client, username, current_access_key):
