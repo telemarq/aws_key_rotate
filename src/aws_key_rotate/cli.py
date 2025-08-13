@@ -27,11 +27,8 @@ def print_colored(message, color=Colors.NC):
 
 def get_credentials_file_path():
     """Get the path to the AWS credentials file"""
-    aws_credentials_file = os.environ.get('AWS_SHARED_CREDENTIALS_FILE')
-    if aws_credentials_file:
-        return aws_credentials_file
-    
-    return os.path.expanduser('~/.aws/credentials')
+    aws_credentials_file = os.environ.get('AWS_CREDENTIALS_FILE', '~/.aws/credentials')
+    return os.path.expanduser(aws_credentials_file)
 
 def get_available_profiles():
     """Get all available profiles from the credentials file"""
