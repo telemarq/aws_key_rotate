@@ -1,0 +1,13 @@
+[project]
+name = "aws-key-rotate"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "boto3"
+]
+
+[project.scripts]
+aws_key_rotate = "aws_key_rotate.cli:main"
+
