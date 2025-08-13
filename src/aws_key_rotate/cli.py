@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 AWS IAM Access Key Management Script
-This script lists active access keys, creates a new one, updates ~/.aws/credentials,
-and deletes the old key that was previously stored in the credentials file.
+This script starts by selecting a profile from ~/.aws/credentials,
+uses those credentials for all AWS operations, creates a new access key,
+updates the credentials file, and deletes the old key.
 """
 
 import boto3
@@ -10,7 +11,7 @@ import json
 import os
 import configparser
 from datetime import datetime
-from botocore.exceptions import ClientError, NoCredentialsError
+from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
 import sys
 import shutil
 
@@ -24,6 +25,128 @@ def print_colored(message, color=Colors.NC):
     """Print message with color"""
     print(f"{color}{message}{Colors.NC}")
 
+def get_credentials_file_path():
+    """Get the path to the AWS credentials file"""
+    aws_credentials_file = os.environ.get('AWS_SHARED_CREDENTIALS_FILE')
+    if aws_credentials_file:
+        return aws_credentials_file
+    
+    return os.path.expanduser('~/.aws/credentials')
+
+def get_available_profiles():
+    """Get all available profiles from the credentials file"""
+    credentials_file = get_credentials_file_path()
+    
+    if not os.path.exists(credentials_file):
+        print_colored(f"Credentials file not found at: {credentials_file}", Colors.RED)
+        return []
+    
+    try:
+        config = configparser.ConfigParser()
+        config.read(credentials_file)
+        profiles = list(config.sections())
+        
+        # Add 'default' if it exists in the file (it might not be a section)
+        if config.has_option('DEFAULT', 'aws_access_key_id') or 'default' not in profiles:
+            # Check if default credentials exist outside of sections
+            try:
+                test_config = configparser.ConfigParser()
+                test_config.read(credentials_file)
+                if 'default' not in profiles and os.path.exists(credentials_file):
+                    with open(credentials_file, 'r') as f:
+                        content = f.read()
+                        if 'aws_access_key_id' in content and '[' not in content.split('aws_access_key_id')[0].strip():
+                            profiles.insert(0, 'default')
+            except:
+                pass
+        
+        return profiles
+        
+    except Exception as e:
+        print_colored(f"Error reading profiles: {e}", Colors.RED)
+        return []
+
+def select_profile():
+    """Ask user to select a profile to work with"""
+    profiles = get_available_profiles()
+    
+    if not profiles:
+        print_colored("No profiles found in credentials file.", Colors.RED)
+        create_default = input("Would you like to create a default profile? (y/N): ").strip().lower()
+        if create_default in ['y', 'yes']:
+            return 'default'
+        else:
+            sys.exit(1)
+    
+    if len(profiles) == 1:
+        profile = profiles[0]
+        use_only = input(f"Found profile '{profile}'. Use this profile? (Y/n): ").strip().lower()
+        if use_only in ['', 'y', 'yes']:
+            return profile
+    
+    print_colored(f"\nAvailable profiles in {get_credentials_file_path()}:", Colors.YELLOW)
+    for i, profile in enumerate(profiles, 1):
+        print(f"{i}. {profile}")
+    
+    while True:
+        try:
+            choice = input(f"\nSelect profile to work with (1-{len(profiles)}): ").strip()
+            choice_num = int(choice)
+            if 1 <= choice_num <= len(profiles):
+                return profiles[choice_num - 1]
+            else:
+                print("Invalid choice. Please try again.")
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+def read_profile_credentials(profile):
+    """Read credentials for a specific profile"""
+    credentials_file = get_credentials_file_path()
+    
+    if not os.path.exists(credentials_file):
+        return None, None
+    
+    try:
+        config = configparser.ConfigParser()
+        config.read(credentials_file)
+        
+        section = profile if profile in config else 'DEFAULT'
+        
+        if section not in config:
+            print_colored(f"Profile '{profile}' not found in credentials file", Colors.RED)
+            return None, None
+        
+        access_key = config[section].get('aws_access_key_id')
+        secret_key = config[section].get('aws_secret_access_key')
+        
+        return access_key, secret_key
+        
+    except Exception as e:
+        print_colored(f"Error reading credentials for profile '{profile}': {e}", Colors.RED)
+        return None, None
+
+def create_boto3_session(profile):
+    """Create a boto3 session using the specified profile"""
+    try:
+        # Try to create session with the profile
+        session = boto3.Session(profile_name=profile)
+        
+        # Test the credentials by making a simple call
+        sts_client = session.client('sts')
+        sts_client.get_caller_identity()
+        
+        return session
+        
+    except ProfileNotFound:
+        print_colored(f"Profile '{profile}' not found in AWS configuration.", Colors.RED)
+        return None
+    except NoCredentialsError:
+        print_colored(f"No credentials found for profile '{profile}'.", Colors.RED)
+        return None
+    except ClientError as e:
+        print_colored(f"Error authenticating with profile '{profile}': {e}", Colors.RED)
+        return None
+
 def get_current_user(sts_client):
     """Get the current IAM user from STS"""
     try:
@@ -31,10 +154,11 @@ def get_current_user(sts_client):
         arn = response['Arn']
         # Extract username from ARN (format: arn:aws:iam::account:user/username)
         username = arn.split('/')[-1]
-        return username
+        account_id = response['Account']
+        return username, account_id
     except ClientError as e:
         print_colored(f"Error getting current user: {e}", Colors.RED)
-        return None
+        return None, None
 
 def list_access_keys(iam_client, username):
     """List all access keys for a user"""
@@ -63,40 +187,7 @@ def create_access_key(iam_client, username):
         print_colored(f"Error creating access key: {e}", Colors.RED)
         return None
 
-def get_credentials_file_path():
-    """Get the path to the AWS credentials file"""
-    aws_credentials_file = os.environ.get('AWS_SHARED_CREDENTIALS_FILE')
-    if aws_credentials_file:
-        return aws_credentials_file
-    
-    return os.path.expanduser('~/.aws/credentials')
-
-def read_credentials_file(profile='default'):
-    """Read the AWS credentials file and return the current access key"""
-    credentials_file = get_credentials_file_path()
-    
-    if not os.path.exists(credentials_file):
-        print_colored(f"Credentials file not found at: {credentials_file}", Colors.YELLOW)
-        return None, None
-    
-    try:
-        config = configparser.ConfigParser()
-        config.read(credentials_file)
-        
-        if profile not in config:
-            print_colored(f"Profile '{profile}' not found in credentials file", Colors.YELLOW)
-            return None, None
-        
-        access_key = config[profile].get('aws_access_key_id')
-        secret_key = config[profile].get('aws_secret_access_key')
-        
-        return access_key, secret_key
-        
-    except Exception as e:
-        print_colored(f"Error reading credentials file: {e}", Colors.RED)
-        return None, None
-
-def update_credentials_file(new_access_key_id, new_secret_key, profile='default'):
+def update_credentials_file(profile, new_access_key_id, new_secret_key):
     """Update the AWS credentials file with new credentials"""
     credentials_file = get_credentials_file_path()
     
@@ -114,103 +205,70 @@ def update_credentials_file(new_access_key_id, new_secret_key, profile='default'
         if os.path.exists(credentials_file):
             config.read(credentials_file)
         
-        # Update or create the profile section
-        if profile not in config:
-            config[profile] = {}
+        # Handle default profile specially
+        section = profile if profile != 'default' else 'default'
         
-        config[profile]['aws_access_key_id'] = new_access_key_id
-        config[profile]['aws_secret_access_key'] = new_secret_key
+        # Update or create the profile section
+        if section not in config:
+            config[section] = {}
+        
+        config[section]['aws_access_key_id'] = new_access_key_id
+        config[section]['aws_secret_access_key'] = new_secret_key
         
         # Write the updated configuration
         with open(credentials_file, 'w') as f:
             config.write(f)
         
-        print_colored(f"Updated credentials file: {credentials_file}", Colors.GREEN)
+        print_colored(f"Updated credentials file: {credentials_file} [profile: {profile}]", Colors.GREEN)
         return True
         
     except Exception as e:
         print_colored(f"Error updating credentials file: {e}", Colors.RED)
         return False
 
-def get_profile_from_user():
-    """Ask user which profile to use"""
-    credentials_file = get_credentials_file_path()
-    
-    if not os.path.exists(credentials_file):
-        return 'default'
-    
-    try:
-        config = configparser.ConfigParser()
-        config.read(credentials_file)
-        profiles = list(config.sections())
-        
-        if not profiles:
-            return 'default'
-        
-        if len(profiles) == 1:
-            return profiles[0]
-        
-        print_colored(f"\nFound multiple profiles in {credentials_file}:", Colors.YELLOW)
-        for i, profile in enumerate(profiles, 1):
-            print(f"{i}. {profile}")
-        
-        while True:
-            try:
-                choice = input(f"\nSelect profile to update (1-{len(profiles)}) or press Enter for 'default': ").strip()
-                if not choice:
-                    return 'default'
-                
-                choice_num = int(choice)
-                if 1 <= choice_num <= len(profiles):
-                    return profiles[choice_num - 1]
-                else:
-                    print("Invalid choice. Please try again.")
-            except ValueError:
-                print("Invalid input. Please enter a number.")
-                
-    except Exception as e:
-        print_colored(f"Error reading profiles: {e}", Colors.RED)
-        return 'default'
-
 def main():
-    print_colored("AWS IAM Access Key Management with Credentials Update", Colors.GREEN)
-    print("====================================================")
+    print_colored("AWS IAM Access Key Rotation", Colors.GREEN)
+    print        ("===========================")
     
-    try:
-        # Initialize AWS clients
-        sts_client = boto3.client('sts')
-        iam_client = boto3.client('iam')
-        
-    except NoCredentialsError:
-        print_colored("Error: AWS credentials not found. Please configure your credentials.", Colors.RED)
+    # Step 1: Select profile first
+    print_colored("\nStep 1: Select AWS Profile", Colors.YELLOW)
+    profile = select_profile()
+    print(f"Selected profile: {profile}")
+    
+    # Step 2: Create boto3 session with selected profile
+    print_colored(f"\nStep 2: Initialize AWS session with profile '{profile}'", Colors.YELLOW)
+    session = create_boto3_session(profile)
+    
+    if not session:
+        print_colored("Failed to create AWS session. Please check your credentials.", Colors.RED)
         sys.exit(1)
     
-    # Get current user
-    print_colored("\nGetting current IAM user...", Colors.YELLOW)
-    username = get_current_user(sts_client)
+    # Create clients using the session
+    sts_client = session.client('sts')
+    iam_client = session.client('iam')
+    
+    # Get current user info
+    print_colored("\nStep 3: Verify current user identity", Colors.YELLOW)
+    username, account_id = get_current_user(sts_client)
     
     if not username:
         print_colored("Error: Could not determine current IAM user.", Colors.RED)
         sys.exit(1)
     
     print(f"Current IAM User: {username}")
+    print(f"AWS Account ID: {account_id}")
     
-    
-    # Get the profile to work with
-    profile = get_profile_from_user()
-    print(f"Working with profile: {profile}")
-    
-    # Read current credentials from file
-    print_colored(f"\nReading current credentials from ~/.aws/credentials [{profile}]...", Colors.YELLOW)
-    current_access_key, current_secret_key = read_credentials_file(profile)
+    # Read current credentials from file for this profile
+    print_colored(f"\nStep 4: Read current credentials for profile '{profile}'", Colors.YELLOW)
+    current_access_key, current_secret_key = read_profile_credentials(profile)
     
     if current_access_key:
-        print(f"Current access key in credentials file: {current_access_key}")
+        print(f"Current access key in profile '{profile}': {current_access_key}")
     else:
-        print("No access key found in credentials file")
+        print(f"No access key found for profile '{profile}' in credentials file")
     
     # List current access keys
-    print_colored(f"\nCurrent access keys for user '{username}':", Colors.YELLOW)
+    print_colored(f"\nStep 5: List current access keys for user '{username}'", Colors.YELLOW)
     access_keys = list_access_keys(iam_client, username)
     
     if not access_keys:
@@ -220,24 +278,24 @@ def main():
         active_keys = [key for key in access_keys if key['Status'] == 'Active']
         
         print(f"{'Access Key ID':<21} {'Create Date':<25} {'Status'}")
-        print("-" * 60)
+        print("-" * 75)
         for key in access_keys:
             create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S %Z')
             status_color = Colors.GREEN if key['Status'] == 'Active' else Colors.YELLOW
-            marker = " <- In credentials file" if key['AccessKeyId'] == current_access_key else ""
+            marker = f" <- Used by profile '{profile}'" if key['AccessKeyId'] == current_access_key else ""
             print(f"{key['AccessKeyId']:<21} {create_date:<25} ", end="")
             print_colored(f"{key['Status']}{marker}", status_color)
     
     print(f"\nNumber of active access keys: {len(active_keys)}")
     
-    
     # Check if user already has 2 active keys (AWS limit)
     if len(active_keys) >= 2:
+        print_colored("\nStep 6: Handle AWS access key limit (2 keys maximum)", Colors.YELLOW)
         print_colored("Warning: You already have 2 active access keys (AWS limit).", Colors.RED)
         
-        # If current key from credentials file exists, offer to delete it
+        # If current key from profile exists, offer to delete it
         if current_access_key and any(key['AccessKeyId'] == current_access_key for key in active_keys):
-            delete_choice = input(f"\nDelete the current key from credentials file ({current_access_key})? (Y/n): ").strip().lower()
+            delete_choice = input(f"\nDelete the current key from profile '{profile}' ({current_access_key})? (Y/n): ").strip().lower()
             if delete_choice in ['', 'y', 'yes']:
                 key_to_delete = current_access_key
             else:
@@ -265,9 +323,12 @@ def main():
         else:
             print_colored("No key ID provided. Exiting.", Colors.RED)
             sys.exit(1)
+    else:
+        print_colored("\nStep 6: Access key limit check - OK", Colors.YELLOW)
+        print("You have room for additional access keys.")
     
     # Create new access key
-    print_colored("\nCreating new access key...", Colors.YELLOW)
+    print_colored("\nStep 7: Create new access key", Colors.YELLOW)
     new_key = create_access_key(iam_client, username)
     
     if not new_key:
@@ -281,45 +342,50 @@ def main():
     print("==================================")
     
     # Update credentials file
-    print_colored(f"\nUpdating ~/.aws/credentials file [{profile}]...", Colors.YELLOW)
-    if update_credentials_file(new_key['AccessKeyId'], new_key['SecretAccessKey'], profile):
+    print_colored(f"\nStep 8: Update credentials file for profile '{profile}'", Colors.YELLOW)
+    if update_credentials_file(profile, new_key['AccessKeyId'], new_key['SecretAccessKey']):
         print_colored("Credentials file updated successfully!", Colors.GREEN)
         
-        # If we had an old key in the credentials file and it wasn't already deleted, delete it now
+        # If we had an old key in the profile and it wasn't already deleted, delete it now
         if (current_access_key and 
-            current_access_key != key_to_delete if 'key_to_delete' in locals() else True and
-            any(key['AccessKeyId'] == current_access_key for key in active_keys)):
+            current_access_key != (key_to_delete if 'key_to_delete' in locals() else None) and
+            any(key['AccessKeyId'] == current_access_key for key in list_access_keys(iam_client, username))):
             
-            delete_old = input(f"\nDelete the old access key ({current_access_key}) that was replaced? (Y/n): ").strip().lower()
+            print_colored(f"\nStep 9: Clean up old access key", Colors.YELLOW)
+            delete_old = input(f"Delete the old access key ({current_access_key}) that was replaced? (Y/n): ").strip().lower()
             if delete_old in ['', 'y', 'yes']:
                 print(f"Deleting old access key: {current_access_key}")
                 if delete_access_key(iam_client, username, current_access_key):
                     print_colored("Old access key deleted successfully.", Colors.GREEN)
                 else:
                     print_colored("Warning: Failed to delete old access key. You may want to delete it manually.", Colors.YELLOW)
+            else:
+                print_colored("Old access key retained (not deleted).", Colors.YELLOW)
+        else:
+            print_colored("\nStep 9: Clean up - No additional cleanup needed", Colors.YELLOW)
     else:
         print_colored("Failed to update credentials file.", Colors.RED)
+        sys.exit(1)
     
-    print_colored("\nIMPORTANT SECURITY NOTES:", Colors.YELLOW)
-    print("1. Your credentials file has been updated with the new access key")
+    print_colored("\nProcess completed successfully!", Colors.GREEN)
+    print_colored("\nIMPORTANT NOTES:", Colors.YELLOW)
+    print(f"1. Profile '{profile}' has been updated with the new access key")
     print("2. A backup of your old credentials file was created")
     print("3. Test your applications to ensure they work with the new credentials")
-    print("4. The old access key has been deleted from AWS (if requested)")
+    print("4. All AWS operations used the selected profile's credentials")
     
     # Show final list of access keys
-    print_colored("\nFinal list of access keys:", Colors.YELLOW)
+    print_colored(f"\nFinal status for user '{username}':", Colors.YELLOW)
     updated_keys = list_access_keys(iam_client, username)
     if updated_keys:
-        active_updated_keys = [key for key in updated_keys if key['Status'] == 'Active']
         print(f"{'Access Key ID':<21} {'Create Date':<25} {'Status'}")
-        print("-" * 60)
+        print("-" * 75)
         for key in updated_keys:
             create_date = key['CreateDate'].strftime('%Y-%m-%d %H:%M:%S %Z')
             status_color = Colors.GREEN if key['Status'] == 'Active' else Colors.YELLOW
-            marker = " <- In credentials file" if key['AccessKeyId'] == new_key['AccessKeyId'] else ""
+            marker = f" <- Profile '{profile}'" if key['AccessKeyId'] == new_key['AccessKeyId'] else ""
             print(f"{key['AccessKeyId']:<21} {create_date:<25} ", end="")
             print_colored(f"{key['Status']}{marker}", status_color)
 
 if __name__ == "__main__":
     main()
-
