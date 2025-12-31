@@ -1,0 +1,25 @@
+version: 3
+
+tasks:
+  default:
+    desc: "Show the available tasks"
+    cmds:
+      - task -l
+    silent: true
+
+  build:
+    desc: "Build the project"
+    cmds:
+      - uv build --no-sources
+  
+  publish:
+    desc: "Publish the project to pypi"
+    prompt: "Did you remember to update the version number? (Something like 'uv bump minor' can help)"
+    dotenv:
+      - .env
+    cmds:
+      - uv publish --token ${PYPI_TOKEN}
+    preconditions:
+      - sh: 'test -n "${PYPI_TOKEN}"'
+        msg: "PYPI_TOKEN is not set"
+  
